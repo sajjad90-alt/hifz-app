@@ -48,6 +48,7 @@ small{color:#64748b}
   <select id="lang">
     <option value="ara">عربي</option>
     <option value="eng">English</option>
+    <option value="ara+eng">عربي + English</option>
   </select>
   <div class="row" style="margin-top:10px">
     <button class="btn" id="btnCam">📷 تصوير بالكاميرا</button>
@@ -58,17 +59,20 @@ small{color:#64748b}
   <div id="prog"><div></div></div>
   <div id="status"></div>
   <label style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" id="auto" checked style="width:20px;height:20px"> ابدأ القراءة الصوتية تلقائيًا بعد التصوير</label>
-  <small>صوّر الصفحة مستقيمة وبإضاءة جيدة وقريبة. راجع النص وصحّح أي خطأ قبل الحفظ.</small>
+  <small>صوّر الصفحة وسيقرؤها التطبيق مباشرة. الأفضل تصوير النص قريبًا وبإضاءة جيدة.</small>
   <details id="keyBox" style="margin-top:10px">
-    <summary style="font-weight:700;color:#0f766e">⚙️ مفتاح القراءة (اختياري)</summary>
-    <small>يعمل التطبيق الآن بمفتاح تجريبي مشترك. للحصول على مفتاحك الخاص المجاني (25 ألف صفحة شهريًا):<br>١) افتح https://ocr.space/ocrapi/freekey واكتب بريدك.<br>٢) افتح رسالة التأكيد في بريدك وانسخ المفتاح.<br>٣) الصقه هنا واضغط حفظ.</small>
+    <summary style="font-weight:700;color:#0f766e">⚙️ مفتاح القراءة الذكية (مرة واحدة)</summary>
+    <small>١) افتح https://aistudio.google.com/apikey وانسخ مفتاحك.<br>٢) الصقه هنا واضغط حفظ.</small>
     <input type="password" id="apiKey" placeholder="الصق المفتاح هنا" style="width:100%;border:1px solid #cbd5e1;border-radius:10px;padding:10px;margin:8px 0" dir="ltr">
+    <label>اسم النموذج (يتغير تلقائيًا عند الحاجة)</label>
+    <input type="text" id="model" style="width:100%;border:1px solid #cbd5e1;border-radius:10px;padding:10px;margin-bottom:8px" dir="ltr">
     <button class="btn gold" id="btnKey">حفظ</button>
   </details>
 </div>
 
 <div class="card">
   <h2>٢) النص المستخرج (يمكنك تصحيحه)</h2>
+  <button class="btn" id="btnPaste" style="margin-bottom:8px">📋 لصق النص المنسوخ وابدأ القراءة</button>
   <textarea id="text" placeholder="سيظهر هنا النص بعد التصوير، أو الصق النص يدويًا..."></textarea>
   <div class="row" style="margin-top:8px">
     <button class="btn gold" id="btnSave">💾 حفظ الصفحة</button>
@@ -145,13 +149,16 @@ $('btnSave').onclick=()=>{
 };
 $('btnClear').onclick=()=>{ stopAll(); $('text').value=''; chunks=[]; renderChunks(); $('now').textContent='—'; $('counter').textContent=''; };
 
-/* ---------- قراءة الصورة (OCR.space) ---------- */
-const KEY_STORE='ocrspace_key', OCR_URL='https://api.ocr.space/parse/image';
+/* ---------- قراءة الصورة: ذكاء اصطناعي ثم قارئ محلي احتياطي ---------- */
+const KEY_STORE='gemini_key', MODEL_STORE='gemini_model', API='https://generativelanguage.googleapis.com/v1beta/';
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 $('apiKey').value=localStorage.getItem(KEY_STORE)||'';
-function getKey(){ return (localStorage.getItem(KEY_STORE)||'').trim()||'helloworld'; }
+$('model').value=localStorage.getItem(MODEL_STORE)||'gemini-2.5-flash';
+if(!localStorage.getItem(KEY_STORE)) $('keyBox').open=true;
 $('btnKey').onclick=()=>{
   localStorage.setItem(KEY_STORE,$('apiKey').value.trim());
-  $('status').textContent='تم الحفظ ✅'; $('keyBox').open=false;
+  localStorage.setItem(MODEL_STORE,$('model').value.trim()||'gemini-2.5-flash');
+  $('status').textContent='تم الحفظ ✅ الآن صوّر الصفحة.'; $('keyBox').open=false;
 };
 $('btnCam').onclick=()=>$('fileCam').click();
 $('btnGal').onclick=()=>$('fileGal').click();
@@ -166,7 +173,13 @@ function loadImg(file){
     img.src=url;
   });
 }
-function canvasBlob(c,q){ return new Promise(r=>c.toBlob(r,'image/jpeg',q)); }
+function makeCanvas(img,max){
+  const sc=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
+  const c=document.createElement('canvas');
+  c.width=Math.round(img.naturalWidth*sc); c.height=Math.round(img.naturalHeight*sc);
+  c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+  return c;
+}
 function enhance(c){
   const g=c.getContext('2d'), d=g.getImageData(0,0,c.width,c.height), p=d.data, hist=new Uint32Array(256);
   for(let i=0;i<p.length;i+=4){ const v=(p[i]*0.299+p[i+1]*0.587+p[i+2]*0.114)|0; p[i]=v; hist[v]++; }
@@ -178,76 +191,109 @@ function enhance(c){
   for(let i=0;i<p.length;i+=4){ let v=(p[i]-lo)*k; v=v<0?0:v>255?255:v; p[i]=p[i+1]=p[i+2]=v; }
   g.putImageData(d,0,0);
 }
-async function compress(file){
-  const img=await loadImg(file);
-  for(const max of [2000,1600,1300,1000,800]){
-    const sc=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
-    const c=document.createElement('canvas');
-    c.width=Math.round(img.naturalWidth*sc); c.height=Math.round(img.naturalHeight*sc);
-    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
-    enhance(c);
-    for(const q of [0.85,0.7,0.55,0.4]){
-      const b=await canvasBlob(c,q);
-      if(b&&b.size<950000) return b;
-    }
-  }
-  throw new Error('حجم الصورة كبير جدًا');
-}
-async function ocrCall(blob,lang,engine){
-  const fd=new FormData();
-  fd.append('apikey',getKey());
-  fd.append('language',lang);
-  fd.append('OCREngine',String(engine));
-  fd.append('scale','true');
-  fd.append('detectOrientation','true');
-  fd.append('isOverlayRequired','false');
-  fd.append('file',blob,'page.jpg');
-  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),45000);
+
+/* --- Gemini --- */
+const PROMPT='Extract the full text of this textbook page exactly as printed. Keep the original language (Arabic and/or English), keep Arabic diacritics (tashkeel) if present, and the correct reading order (right-to-left for Arabic). Skip page numbers, running headers/footers, pictures and pencil marks. Separate paragraphs with a blank line. Output only the text, with no commentary and no markdown.';
+async function callGemini(model,key,b64){
+  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),30000);
   try{
-    const r=await fetch(OCR_URL,{method:'POST',body:fd,signal:ctrl.signal});
-    const j=await r.json().catch(()=>null);
+    const r=await fetch(API+'models/'+model+':generateContent',{
+      method:'POST', signal:ctrl.signal,
+      headers:{'Content-Type':'application/json','x-goog-api-key':key},
+      body:JSON.stringify({
+        contents:[{parts:[{text:PROMPT},{inline_data:{mime_type:'image/jpeg',data:b64}}]}],
+        generationConfig:{temperature:0},
+        safetySettings:['HARM_CATEGORY_HARASSMENT','HARM_CATEGORY_HATE_SPEECH','HARM_CATEGORY_SEXUALLY_EXPLICIT','HARM_CATEGORY_DANGEROUS_CONTENT'].map(c=>({category:c,threshold:'BLOCK_NONE'}))
+      })
+    });
+    let j=null; try{ j=await r.json(); }catch(e){}
     return {status:r.status,json:j};
-  }finally{ clearTimeout(t); }
+  }catch(e){ return {status:0,json:null}; }
+  finally{ clearTimeout(t); }
 }
-function ocrText(j){
-  try{ return (j.ParsedResults||[]).map(p=>p.ParsedText||'').join('\n').replace(/\r/g,'').trim(); }catch(e){ return ''; }
+async function listModels(key){
+  const r=await fetch(API+'models?pageSize=200',{headers:{'x-goog-api-key':key}});
+  const j=await r.json();
+  const bad=/image|tts|live|audio|embed|imagen|veo|robotics|computer|learnlm|gemma|aqa|native/i;
+  const list=(j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')&&!bad.test(m.name)).map(m=>m.name.replace('models/',''));
+  const flash=list.filter(n=>/flash|hydrogen/i.test(n)&&!/lite/i.test(n)).sort().reverse();
+  const lite=list.filter(n=>/lite/i.test(n)).sort().reverse();
+  const rest=list.filter(n=>!flash.includes(n)&&!lite.includes(n)).sort().reverse();
+  return [...flash,...lite,...rest];
 }
-function ocrError(j){
-  try{ const m=j.ErrorMessage; return Array.isArray(m)?m.join(' '):(m||j.ErrorDetails||''); }catch(e){ return ''; }
+function extractText(j){
+  try{ return j.candidates[0].content.parts.map(p=>p.text||'').join('').trim().replace(/^```[a-z]*\n?|```$/g,'').trim(); }catch(e){ return ''; }
 }
+async function geminiRead(b64,st){
+  const key=(localStorage.getItem(KEY_STORE)||'').trim();
+  if(!key) return {text:'',err:'لا يوجد مفتاح'};
+  const t0=Date.now();
+  let models=[(localStorage.getItem(MODEL_STORE)||'gemini-2.5-flash').trim()];
+  let lastErr='';
+  for(let round=0;round<2;round++){
+    for(const m of models){
+      if(Date.now()-t0>75000) return {text:'',err:lastErr||'انتهت المهلة'};
+      st.textContent='القراءة الذكية ('+m+')...';
+      const r=await callGemini(m,key,b64);
+      if(r.status===200){
+        const t=extractText(r.json);
+        if(t){ localStorage.setItem(MODEL_STORE,m); $('model').value=m; return {text:t}; }
+        lastErr='رد فارغ'; continue;
+      }
+      const msg=(r.json&&r.json.error&&r.json.error.message)||'';
+      if(/api key/i.test(msg)) return {text:'',err:'المفتاح غير صحيح'};
+      lastErr='خطأ '+r.status;
+      if(r.status===404||r.status===400){ // النموذج غير مدعوم: جرّب غيره
+        try{ const l=await listModels(key); models=[...new Set([...models,...l])].slice(0,6); }catch(e){}
+      } else if(models.length<4){
+        try{ const l=await listModels(key); models=[...new Set([...models,...l])].slice(0,6); }catch(e){}
+      }
+    }
+    if(round===0){ st.textContent='الخدمة مشغولة، أعيد المحاولة بعد قليل...'; await sleep(4000); }
+  }
+  return {text:'',err:lastErr};
+}
+
+/* --- القارئ المحلي الاحتياطي (Tesseract) --- */
+function loadTess(){
+  return new Promise((res,rej)=>{
+    if(window.Tesseract) return res();
+    const sc=document.createElement('script');
+    sc.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+    sc.onload=res; sc.onerror=()=>rej(new Error('تعذر تحميل القارئ المحلي'));
+    document.head.appendChild(sc);
+  });
+}
+async function tessRead(canvas,lang,st,bar){
+  await loadTess();
+  const r=await Tesseract.recognize(canvas,lang,{logger:m=>{
+    if(m.status==='recognizing text'){ bar.style.width=(40+m.progress*60)+'%'; st.textContent='القراءة المحلية... '+Math.round(m.progress*100)+'%'; }
+    else st.textContent='تحميل بيانات اللغة (أول مرة فقط)...';
+  }});
+  return (r.data.text||'').trim();
+}
+
 async function handleFile(file){
   if(!file) return;
   stopAll();
   const prog=$('prog'), bar=prog.firstElementChild, st=$('status');
-  prog.style.display='block'; bar.style.width='20%'; st.textContent='جاري تجهيز الصورة...';
+  prog.style.display='block'; bar.style.width='15%'; st.textContent='جاري تجهيز الصورة...';
   try{
-    const blob=await compress(file);
-    bar.style.width='50%'; st.textContent='جاري قراءة الصفحة (قد تستغرق حتى 30 ثانية)...';
-    const lang=$('lang').value;
-    let text='', errs=[];
-    const engines=(lang==='ara')?[1,3]:[2,1];
-    for(const engine of engines){
-      st.textContent='جاري القراءة (محرك '+engine+')...';
-      try{
-        const r=await ocrCall(blob,lang,engine);
-        if(r.json&&!r.json.IsErroredOnProcessing){
-          text=ocrText(r.json);
-          if(text) break;
-          errs.push('محرك '+engine+': لم يجد نصًا');
-        }else{
-          errs.push('محرك '+engine+': '+(ocrError(r.json)||('خطأ '+r.status)));
-        }
-      }catch(e){
-        errs.push('محرك '+engine+': '+((e.name==='AbortError')?'انتهت المهلة':'تعذر الاتصال'));
-      }
-      bar.style.width='75%';
+    const img=await loadImg(file);
+    const b64=makeCanvas(img,1600).toDataURL('image/jpeg',0.85).split(',')[1];
+    bar.style.width='35%';
+    let text='', how='';
+    const g=await geminiRead(b64,st);
+    if(g.text){ text=g.text; how='القراءة الذكية'; }
+    else{
+      st.textContent='القراءة الذكية غير متاحة ('+g.err+')، أستخدم القراءة المحلية...';
+      const c=makeCanvas(img,2200); enhance(c);
+      text=await tessRead(c,$('lang').value,st,bar); how='القراءة المحلية (قد تحتاج تصحيحًا)';
     }
-    const lastErr=errs.join(' | ');
     bar.style.width='100%';
-    $('text').value=text;
-    buildChunks();
-    if(!text){ st.textContent='لم يُستخرج نص. '+lastErr+' — جرّب قصّ الصورة على النص فقط.'; return; }
-    st.textContent='تمت القراءة ✅ راجع النص إن أردت.';
+    $('text').value=text; buildChunks();
+    if(!text){ st.textContent='لم يُستخرج نص. صوّر النص أقرب وبإضاءة أفضل.'; return; }
+    st.textContent='تمت القراءة ✅ ('+how+')';
     if($('auto').checked) startPlay();
   }catch(err){
     st.textContent='خطأ: '+err.message;
@@ -368,6 +414,17 @@ $('btnStop').onclick=()=>{ stopAll(); idx=0; rep=0; updateUI(); renderChunks(); 
 $('btnNext').onclick=()=>{ const was=playing; stopAll(); if(idx<chunks.length-1) idx++; rep=0; renderChunks(); updateUI(); if(was) startPlay(); };
 $('btnPrev').onclick=()=>{ const was=playing; stopAll(); if(idx>0) idx--; rep=0; renderChunks(); updateUI(); if(was) startPlay(); };
 document.addEventListener('visibilitychange',()=>{ if(playing&&document.visibilityState==='visible') getWake(); });
+
+
+$('btnPaste').onclick=async()=>{
+  try{
+    const t=(await navigator.clipboard.readText()||'').trim();
+    if(!t){ alert('لا يوجد نص منسوخ. انسخ النص من Lens أولًا.'); return; }
+    stopAll(); $('text').value=t; buildChunks(); startPlay();
+  }catch(e){
+    alert('اسمح للتطبيق بقراءة الحافظة، أو اضغط مطولًا داخل خانة النص واختر لصق ثم اضغط ابدأ.');
+  }
+};
 
 renderSaved();
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
