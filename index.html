@@ -220,17 +220,23 @@ async function handleFile(file){
       const m=await pickModel(key);
       if(m){ model=m; localStorage.setItem(MODEL_STORE,m); $('model').value=m; r=await callGemini(model,key,b64); }
     }
-    if(r.status===429){
-      st.textContent='الحد المجاني لهذا النموذج منتهٍ، أجرّب نموذجًا آخر...';
+    const transient=c=>[429,500,502,503,504].includes(c);
+    if(transient(r.status)&&r.status!==429){
+      st.textContent='الخدمة مشغولة، أعيد المحاولة...';
+      await new Promise(z=>setTimeout(z,2500));
+      r=await callGemini(model,key,b64);
+    }
+    if(transient(r.status)){
+      st.textContent='النموذج غير متاح الآن، أجرّب نموذجًا آخر...';
       let alts=[]; try{ alts=await listModels(key); }catch(e){}
       for(const m of alts.filter(x=>x!==model).slice(0,6)){
         const rr=await callGemini(m,key,b64);
-        if(rr.status!==429&&rr.status!==404){ r=rr; model=m; localStorage.setItem(MODEL_STORE,m); $('model').value=m; break; }
+        if(!transient(rr.status)&&rr.status!==404){ r=rr; model=m; localStorage.setItem(MODEL_STORE,m); $('model').value=m; break; }
       }
     }
-    if(r.status===429){
+    if(transient(r.status)){
       const msg=(r.json&&r.json.error&&r.json.error.message)||'';
-      throw new Error('الحد المجاني منتهٍ لكل النماذج المتاحة حاليًا. انتظر دقيقة وأعد المحاولة، أو غدًا إن انتهت الحصة اليومية. | '+msg.slice(0,160));
+      throw new Error((r.status===429?'الحد المجاني منتهٍ لكل النماذج المتاحة حاليًا. انتظر دقيقة وأعد المحاولة، أو غدًا إن انتهت الحصة اليومية.':'خوادم Google مشغولة حاليًا. أعد المحاولة بعد دقيقة أو دقيقتين.')+' | '+msg.slice(0,160));
     }
     if(r.status===400||r.status===401||r.status===403){
       const msg=(r.json&&r.json.error&&r.json.error.message)||'';
