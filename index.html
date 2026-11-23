@@ -183,14 +183,17 @@ async function callGemini(model,key,b64,prompt){
   let j=null; try{ j=await r.json(); }catch(e){}
   return {status:r.status,json:j};
 }
-async function pickModel(key){
+async function listModels(key){
   const r=await fetch(API+'models?pageSize=200',{headers:{'x-goog-api-key':key}});
   const j=await r.json();
   const bad=/image|tts|live|audio|embed|imagen|veo|robotics|computer|learnlm|gemma|aqa|native/i;
   const list=(j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')&&!bad.test(m.name)).map(m=>m.name.replace('models/',''));
   const flash=list.filter(n=>/flash|hydrogen/i.test(n)&&!/lite/i.test(n)).sort().reverse();
-  return flash[0]||list.sort().reverse()[0]||null;
+  const lite=list.filter(n=>/lite/i.test(n)).sort().reverse();
+  const rest=list.filter(n=>!flash.includes(n)&&!lite.includes(n)).sort().reverse();
+  return [...flash,...lite,...rest];
 }
+async function pickModel(key){ const l=await listModels(key); return l[0]||null; }
 function diag(j,model){
   try{
     const c=j&&j.candidates&&j.candidates[0];
@@ -217,7 +220,18 @@ async function handleFile(file){
       const m=await pickModel(key);
       if(m){ model=m; localStorage.setItem(MODEL_STORE,m); $('model').value=m; r=await callGemini(model,key,b64); }
     }
-    if(r.status===429) throw new Error('انتهى الحد المجاني المؤقت. انتظر دقيقة وأعد المحاولة (أو يوم كامل إن انتهت الحصة اليومية).');
+    if(r.status===429){
+      st.textContent='الحد المجاني لهذا النموذج منتهٍ، أجرّب نموذجًا آخر...';
+      let alts=[]; try{ alts=await listModels(key); }catch(e){}
+      for(const m of alts.filter(x=>x!==model).slice(0,6)){
+        const rr=await callGemini(m,key,b64);
+        if(rr.status!==429&&rr.status!==404){ r=rr; model=m; localStorage.setItem(MODEL_STORE,m); $('model').value=m; break; }
+      }
+    }
+    if(r.status===429){
+      const msg=(r.json&&r.json.error&&r.json.error.message)||'';
+      throw new Error('الحد المجاني منتهٍ لكل النماذج المتاحة حاليًا. انتظر دقيقة وأعد المحاولة، أو غدًا إن انتهت الحصة اليومية. | '+msg.slice(0,160));
+    }
     if(r.status===400||r.status===401||r.status===403){
       const msg=(r.json&&r.json.error&&r.json.error.message)||'';
       throw new Error('المفتاح غير صحيح أو غير مفعّل. '+msg.slice(0,120));
