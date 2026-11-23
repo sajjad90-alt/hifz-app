@@ -90,7 +90,15 @@ small{color:#64748b}
   <input type="range" id="gap" min="0" max="6" step="0.5" value="1">
   <label>سرعة القراءة: <b id="rateV">0.9</b></label>
   <input type="range" id="rate" min="0.5" max="1.5" step="0.05" value="0.9">
-  <label>الصوت العربي</label>
+  <label>مصدر الصوت</label>
+  <select id="vmode">
+    <option value="auto">تلقائي (يُنصح به)</option>
+    <option value="net">صوت Google عبر الإنترنت</option>
+    <option value="device">صوت الجهاز</option>
+  </select>
+  <div id="voiceWarn" style="font-size:13px;line-height:1.8;color:#b45309;margin:6px 0"></div>
+  <button class="btn gray" id="btnTest" style="margin:6px 0">🔊 اختبار الصوت العربي</button>
+  <label>الصوت العربي (من الجهاز)</label>
   <select id="vAr"></select>
   <label>الصوت الإنجليزي</label>
   <select id="vEn"></select>
@@ -353,6 +361,7 @@ $('rate').oninput=()=>$('rateV').textContent=$('rate').value;
 let voices=[];
 function loadVoices(){
   voices=synth.getVoices();
+  setTimeout(()=>{ if(typeof updateVoiceWarn==='function') updateVoiceWarn(); },0);
   fill($('vAr'),voices.filter(v=>/^ar/i.test(v.lang)),'ar');
   fill($('vEn'),voices.filter(v=>/^en/i.test(v.lang)),'en');
 }
@@ -366,9 +375,19 @@ function fill(sel,list,key){
 $('vAr').onchange=()=>localStorage.setItem('voice_ar',$('vAr').value);
 $('vEn').onchange=()=>localStorage.setItem('voice_en',$('vEn').value);
 if(synth){ loadVoices(); synth.onvoiceschanged=loadVoices; }
+function updateVoiceWarn(){
+  const w=$('voiceWarn');
+  if(hasArVoice()){ w.innerHTML=''; return; }
+  w.innerHTML='⚠️ لا يوجد صوت عربي مثبّت في جهازك، لذلك يستخدم التطبيق تلقائيًا صوت Google عبر الإنترنت. لتثبيت صوت عربي على الجهاز: ثبّت <a href="https://play.google.com/store/apps/details?id=com.google.android.tts" target="_blank">Speech Services by Google</a> ثم من إعدادات الهاتف ← تحويل النص إلى كلام ← المحرك المفضّل ← ⚙️ ← تثبيت بيانات الصوت ← العربية.';
+}
+$('vmode').value=localStorage.getItem('vmode')||'auto';
+$('vmode').onchange=()=>localStorage.setItem('vmode',$('vmode').value);
+$('btnTest').onclick=()=>{ stopAll(); speak('بسم الله الرحمن الرحيم، مرحبا بكم في تطبيق التحفيظ.',()=>{}); };
+
 
 /* ---------- التشغيل ---------- */
-function speak(text,done){
+let curAudio=null;
+function speakDevice(text,done){
   const isAr=/[\u0600-\u06FF]/.test(text);
   const u=new SpeechSynthesisUtterance(text);
   const uri=(isAr?$('vAr'):$('vEn')).value;
@@ -377,10 +396,27 @@ function speak(text,done){
   u.rate=parseFloat($('rate').value);
   let fired=false; const fin=()=>{ if(fired) return; fired=true; clearInterval(keep); done(); };
   u.onend=fin; u.onerror=fin;
-  curUtter=u; // منع حذف الكائن من الذاكرة
+  curUtter=u;
   synth.speak(u);
-  // حل لمشكلة توقف كروم أندرويد في النصوص الطويلة
   const keep=setInterval(()=>{ if(!synth.speaking){ fin(); } },700);
+}
+function hasArVoice(){ return voices.some(v=>/^ar/i.test(v.lang)); }
+function speak(text,done){
+  const isAr=/[\u0600-\u06FF]/.test(text);
+  const mode=$('vmode').value;
+  const useNet=text.length<=190&&((mode==='net')||(mode==='auto'&&isAr&&!hasArVoice()));
+  if(!useNet){ speakDevice(text,done); return; }
+  let fired=false;
+  const fallback=()=>{ if(fired) return; fired=true; speakDevice(text,done); };
+  const url='https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl='+(isAr?'ar':'en')+'&q='+encodeURIComponent(text);
+  const a=new Audio(url); curAudio=a;
+  a.playbackRate=Math.min(1.25,Math.max(0.6,parseFloat($('rate').value)));
+  a.onended=()=>{ if(fired) return; fired=true; done(); };
+  a.onerror=fallback;
+  const pr=a.play(); if(pr&&pr.catch) pr.catch(fallback);
+}
+function stopAudio(){
+  if(curAudio){ curAudio.onended=null; curAudio.onerror=null; try{ curAudio.pause(); }catch(e){} curAudio=null; }
 }
 function playChunk(){
   if(!playing) return;
@@ -406,7 +442,7 @@ function startPlay(){
   playing=true; getWake(); renderChunks(); playChunk();
 }
 function stopAll(){
-  playing=false; token++; clearTimeout(timer);
+  playing=false; token++; clearTimeout(timer); stopAudio();
   if(synth) synth.cancel(); releaseWake(); updateUI();
 }
 $('btnPlay').onclick=()=>{ if(playing){ stopAll(); } else startPlay(); };
@@ -426,6 +462,7 @@ $('btnPaste').onclick=async()=>{
   }
 };
 
+updateVoiceWarn();
 renderSaved();
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
