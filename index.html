@@ -411,7 +411,7 @@ function speak(text,done){
   text=text.normalize('NFKC');
   const isAr=AR_RE.test(text);
   const mode=$('vmode').value;
-  const useNet=text.length<=190&&(mode==='net'||(mode==='auto'&&isAr));
+  const useNet=text.length<=190&&(mode==='net'||(mode==='auto'&&isAr&&voices.length>0&&!hasArVoice()));
   if(!useNet){ speakDevice(text,done); return; }
   let fired=false;
   const fallback=why=>{ if(fired) return; fired=true; speakDevice(text,done,why); };
