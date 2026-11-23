@@ -44,7 +44,12 @@ small{color:#64748b}
 
 <div class="card">
   <h2>١) صوّر صفحة الكتاب</h2>
-  <div class="row">
+  <label>لغة الصفحة</label>
+  <select id="lang">
+    <option value="ara">عربي</option>
+    <option value="eng">English</option>
+  </select>
+  <div class="row" style="margin-top:10px">
     <button class="btn" id="btnCam">📷 تصوير بالكاميرا</button>
     <button class="btn alt" id="btnGal">🖼️ من المعرض</button>
   </div>
@@ -53,13 +58,11 @@ small{color:#64748b}
   <div id="prog"><div></div></div>
   <div id="status"></div>
   <label style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" id="auto" checked style="width:20px;height:20px"> ابدأ القراءة الصوتية تلقائيًا بعد التصوير</label>
-  <small>صوّر الصفحة مستقيمة وبإضاءة جيدة. يقرأ الذكاء الاصطناعي الصورة مباشرة بالعربي والإنجليزي والتشكيل.</small>
+  <small>صوّر الصفحة مستقيمة وبإضاءة جيدة وقريبة. راجع النص وصحّح أي خطأ قبل الحفظ.</small>
   <details id="keyBox" style="margin-top:10px">
-    <summary style="font-weight:700;color:#0f766e">⚙️ مفتاح القراءة الذكية (مرة واحدة فقط)</summary>
-    <small>١) افتح https://aistudio.google.com/apikey ثم Create API key وانسخ المفتاح.<br>٢) الصقه هنا واضغط حفظ. يبقى داخل هاتفك فقط.</small>
+    <summary style="font-weight:700;color:#0f766e">⚙️ مفتاح القراءة (اختياري)</summary>
+    <small>يعمل التطبيق الآن بمفتاح تجريبي مشترك. للحصول على مفتاحك الخاص المجاني (25 ألف صفحة شهريًا):<br>١) افتح https://ocr.space/ocrapi/freekey واكتب بريدك.<br>٢) افتح رسالة التأكيد في بريدك وانسخ المفتاح.<br>٣) الصقه هنا واضغط حفظ.</small>
     <input type="password" id="apiKey" placeholder="الصق المفتاح هنا" style="width:100%;border:1px solid #cbd5e1;border-radius:10px;padding:10px;margin:8px 0" dir="ltr">
-    <label>اسم النموذج (يُكتشف تلقائيًا عند الحاجة)</label>
-    <input type="text" id="model" style="width:100%;border:1px solid #cbd5e1;border-radius:10px;padding:10px;margin-bottom:8px" dir="ltr">
     <button class="btn gold" id="btnKey">حفظ</button>
   </details>
 </div>
@@ -142,118 +145,89 @@ $('btnSave').onclick=()=>{
 };
 $('btnClear').onclick=()=>{ stopAll(); $('text').value=''; chunks=[]; renderChunks(); $('now').textContent='—'; $('counter').textContent=''; };
 
-/* ---------- قراءة الصورة بالذكاء الاصطناعي (Gemini) ---------- */
-const KEY_STORE='gemini_key', MODEL_STORE='gemini_model', API='https://generativelanguage.googleapis.com/v1beta/';
+/* ---------- قراءة الصورة (OCR.space) ---------- */
+const KEY_STORE='ocrspace_key', OCR_URL='https://api.ocr.space/parse/image';
 $('apiKey').value=localStorage.getItem(KEY_STORE)||'';
-$('model').value=localStorage.getItem(MODEL_STORE)||'gemini-2.5-flash';
-if(!localStorage.getItem(KEY_STORE)) $('keyBox').open=true;
+function getKey(){ return (localStorage.getItem(KEY_STORE)||'').trim()||'helloworld'; }
 $('btnKey').onclick=()=>{
   localStorage.setItem(KEY_STORE,$('apiKey').value.trim());
-  localStorage.setItem(MODEL_STORE,$('model').value.trim()||'gemini-2.5-flash');
-  $('status').textContent='تم الحفظ ✅ الآن صوّر الصفحة.'; $('keyBox').open=false;
+  $('status').textContent='تم الحفظ ✅'; $('keyBox').open=false;
 };
 $('btnCam').onclick=()=>$('fileCam').click();
 $('btnGal').onclick=()=>$('fileGal').click();
 $('fileCam').onchange=e=>handleFile(e.target.files[0]);
 $('fileGal').onchange=e=>handleFile(e.target.files[0]);
 
-function toJpegBase64(file){
+function loadImg(file){
   return new Promise((res,rej)=>{
     const url=URL.createObjectURL(file), img=new Image();
-    img.onload=()=>{
-      URL.revokeObjectURL(url);
-      const max=2000; let w=img.naturalWidth,h=img.naturalHeight;
-      const sc=Math.min(1,max/Math.max(w,h)); w=Math.round(w*sc); h=Math.round(h*sc);
-      const c=document.createElement('canvas'); c.width=w; c.height=h;
-      c.getContext('2d').drawImage(img,0,0,w,h);
-      res(c.toDataURL('image/jpeg',0.85).split(',')[1]);
-    };
+    img.onload=()=>{ URL.revokeObjectURL(url); res(img); };
     img.onerror=()=>rej(new Error('تعذر فتح الصورة'));
     img.src=url;
   });
 }
-const PROMPT='Extract the full text of this textbook page exactly as printed. Keep the original language (Arabic and/or English), keep Arabic diacritics (tashkeel) if present, and keep the correct reading order (right-to-left for Arabic). Skip page numbers, running headers/footers, and pictures. Separate paragraphs with a blank line. Output only the text, with no commentary and no markdown.';
-const PROMPT2='Transcribe all the text visible in this image, in its original language, one paragraph per block. Output only the text.';
-async function callGemini(model,key,b64,prompt){
-  const r=await fetch(API+'models/'+model+':generateContent',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','x-goog-api-key':key},
-    body:JSON.stringify({contents:[{parts:[{text:prompt||PROMPT},{inline_data:{mime_type:'image/jpeg',data:b64}}]}],generationConfig:{temperature:0},safetySettings:['HARM_CATEGORY_HARASSMENT','HARM_CATEGORY_HATE_SPEECH','HARM_CATEGORY_SEXUALLY_EXPLICIT','HARM_CATEGORY_DANGEROUS_CONTENT'].map(c=>({category:c,threshold:'BLOCK_NONE'}))})
-  });
-  let j=null; try{ j=await r.json(); }catch(e){}
-  return {status:r.status,json:j};
+function canvasBlob(c,q){ return new Promise(r=>c.toBlob(r,'image/jpeg',q)); }
+async function compress(file){
+  const img=await loadImg(file);
+  for(const max of [2000,1600,1300,1000,800]){
+    const sc=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
+    const c=document.createElement('canvas');
+    c.width=Math.round(img.naturalWidth*sc); c.height=Math.round(img.naturalHeight*sc);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    for(const q of [0.85,0.7,0.55,0.4]){
+      const b=await canvasBlob(c,q);
+      if(b&&b.size<950000) return b;
+    }
+  }
+  throw new Error('حجم الصورة كبير جدًا');
 }
-async function listModels(key){
-  const r=await fetch(API+'models?pageSize=200',{headers:{'x-goog-api-key':key}});
-  const j=await r.json();
-  const bad=/image|tts|live|audio|embed|imagen|veo|robotics|computer|learnlm|gemma|aqa|native/i;
-  const list=(j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')&&!bad.test(m.name)).map(m=>m.name.replace('models/',''));
-  const flash=list.filter(n=>/flash|hydrogen/i.test(n)&&!/lite/i.test(n)).sort().reverse();
-  const lite=list.filter(n=>/lite/i.test(n)).sort().reverse();
-  const rest=list.filter(n=>!flash.includes(n)&&!lite.includes(n)).sort().reverse();
-  return [...flash,...lite,...rest];
-}
-async function pickModel(key){ const l=await listModels(key); return l[0]||null; }
-function diag(j,model){
+async function ocrCall(blob,lang,engine){
+  const fd=new FormData();
+  fd.append('apikey',getKey());
+  fd.append('language',lang);
+  fd.append('OCREngine',String(engine));
+  fd.append('scale','true');
+  fd.append('detectOrientation','true');
+  fd.append('isOverlayRequired','false');
+  fd.append('file',blob,'page.jpg');
+  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),45000);
   try{
-    const c=j&&j.candidates&&j.candidates[0];
-    return 'النموذج: '+model+' | سبب التوقف: '+((c&&c.finishReason)||'لا يوجد')+' | حظر: '+((j&&j.promptFeedback&&j.promptFeedback.blockReason)||'لا')+(c&&c.content&&c.content.parts?(' | أجزاء: '+c.content.parts.length):' | بلا محتوى');
-  }catch(e){ return 'تعذر قراءة الرد'; }
+    const r=await fetch(OCR_URL,{method:'POST',body:fd,signal:ctrl.signal});
+    const j=await r.json().catch(()=>null);
+    return {status:r.status,json:j};
+  }finally{ clearTimeout(t); }
 }
-function extractText(j){
-  try{ return j.candidates[0].content.parts.map(p=>p.text||'').join('').trim().replace(/^```[a-z]*\n?|```$/g,'').trim(); }catch(e){ return ''; }
+function ocrText(j){
+  try{ return (j.ParsedResults||[]).map(p=>p.ParsedText||'').join('\n').replace(/\r/g,'').trim(); }catch(e){ return ''; }
+}
+function ocrError(j){
+  try{ const m=j.ErrorMessage; return Array.isArray(m)?m.join(' '):(m||j.ErrorDetails||''); }catch(e){ return ''; }
 }
 async function handleFile(file){
   if(!file) return;
   stopAll();
-  const key=(localStorage.getItem(KEY_STORE)||'').trim();
   const prog=$('prog'), bar=prog.firstElementChild, st=$('status');
-  if(!key){ st.textContent='أدخل مفتاح القراءة الذكية أولًا (الخطوة أدناه).'; $('keyBox').open=true; return; }
-  prog.style.display='block'; bar.style.width='25%'; st.textContent='جاري تجهيز الصورة...';
+  prog.style.display='block'; bar.style.width='20%'; st.textContent='جاري تجهيز الصورة...';
   try{
-    const b64=await toJpegBase64(file);
-    bar.style.width='55%'; st.textContent='الذكاء الاصطناعي يقرأ الصفحة...';
-    let model=(localStorage.getItem(MODEL_STORE)||'gemini-2.5-flash').trim();
-    let r=await callGemini(model,key,b64);
-    if(r.status===404||(r.status===400&&/model/i.test(JSON.stringify(r.json||{})))){
-      st.textContent='جاري اختيار أفضل نموذج متاح...';
-      const m=await pickModel(key);
-      if(m){ model=m; localStorage.setItem(MODEL_STORE,m); $('model').value=m; r=await callGemini(model,key,b64); }
-    }
-    const transient=c=>[429,500,502,503,504].includes(c);
-    if(transient(r.status)&&r.status!==429){
-      st.textContent='الخدمة مشغولة، أعيد المحاولة...';
-      await new Promise(z=>setTimeout(z,2500));
-      r=await callGemini(model,key,b64);
-    }
-    if(transient(r.status)){
-      st.textContent='النموذج غير متاح الآن، أجرّب نموذجًا آخر...';
-      let alts=[]; try{ alts=await listModels(key); }catch(e){}
-      for(const m of alts.filter(x=>x!==model).slice(0,6)){
-        const rr=await callGemini(m,key,b64);
-        if(!transient(rr.status)&&rr.status!==404){ r=rr; model=m; localStorage.setItem(MODEL_STORE,m); $('model').value=m; break; }
+    const blob=await compress(file);
+    bar.style.width='50%'; st.textContent='جاري قراءة الصفحة (قد تستغرق حتى 30 ثانية)...';
+    const lang=$('lang').value;
+    let text='', lastErr='';
+    for(const engine of [2,1]){
+      try{
+        const r=await ocrCall(blob,lang,engine);
+        if(r.json&&!r.json.IsErroredOnProcessing){ text=ocrText(r.json); if(text) break; }
+        else lastErr=ocrError(r.json)||('خطأ ('+r.status+')');
+      }catch(e){
+        lastErr=(e.name==='AbortError')?'انتهت مهلة الاتصال، أعد المحاولة.':'تعذر الاتصال بالإنترنت.';
       }
-    }
-    if(transient(r.status)){
-      const msg=(r.json&&r.json.error&&r.json.error.message)||'';
-      throw new Error((r.status===429?'الحد المجاني منتهٍ لكل النماذج المتاحة حاليًا. انتظر دقيقة وأعد المحاولة، أو غدًا إن انتهت الحصة اليومية.':'خوادم Google مشغولة حاليًا. أعد المحاولة بعد دقيقة أو دقيقتين.')+' | '+msg.slice(0,160));
-    }
-    if(r.status===400||r.status===401||r.status===403){
-      const msg=(r.json&&r.json.error&&r.json.error.message)||'';
-      throw new Error('المفتاح غير صحيح أو غير مفعّل. '+msg.slice(0,120));
-    }
-    if(r.status!==200) throw new Error('خطأ من الخدمة ('+r.status+')');
-    let text=extractText(r.json), last=r.json;
-    if(!text){
-      st.textContent='محاولة ثانية...';
-      const r2=await callGemini(model,key,b64,PROMPT2);
-      if(r2.status===200){ text=extractText(r2.json); last=r2.json; }
+      st.textContent='محاولة ثانية...'; bar.style.width='75%';
     }
     bar.style.width='100%';
     $('text').value=text;
     buildChunks();
-    if(!text){ st.textContent='لم يُستخرج نص. '+diag(last,model); return; }
-    st.textContent='تمت القراءة ✅';
+    if(!text){ st.textContent='لم يُستخرج نص. '+lastErr+' جرّب صورة أوضح وأقرب.'; return; }
+    st.textContent='تمت القراءة ✅ راجع النص إن أردت.';
     if($('auto').checked) startPlay();
   }catch(err){
     st.textContent='خطأ: '+err.message;
