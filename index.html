@@ -98,6 +98,7 @@ small{color:#64748b}
   </select>
   <div id="voiceWarn" style="font-size:13px;line-height:1.8;color:#b45309;margin:6px 0"></div>
   <button class="btn gray" id="btnTest" style="margin:6px 0">🔊 اختبار الصوت العربي</button>
+  <div id="diag2" style="font-size:12px;color:#64748b;direction:ltr;text-align:left;margin-bottom:6px"></div>
   <label>الصوت العربي (من الجهاز)</label>
   <select id="vAr"></select>
   <label>الصوت الإنجليزي</label>
@@ -109,6 +110,7 @@ small{color:#64748b}
   <h2>٤) التشغيل</h2>
   <div id="now">—</div>
   <div id="counter"></div>
+  <div id="diag" style="font-size:12px;color:#64748b;text-align:center;direction:ltr;margin-bottom:6px"></div>
   <div class="row">
     <button class="btn" id="btnPlay">▶️ ابدأ</button>
     <button class="btn warn" id="btnStop">⏹ إيقاف</button>
@@ -387,33 +389,39 @@ $('btnTest').onclick=()=>{ stopAll(); speak('بسم الله الرحمن الر
 
 /* ---------- التشغيل ---------- */
 let curAudio=null;
-function speakDevice(text,done){
-  const isAr=/[\u0600-\u06FF]/.test(text);
+const AR_RE=/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+function diag(msg){ ['diag','diag2'].forEach(i=>{ const d=$(i); if(d) d.textContent=msg; }); }
+function speakDevice(text,done,why){
+  const isAr=AR_RE.test(text);
   const u=new SpeechSynthesisUtterance(text);
-  const uri=(isAr?$('vAr'):$('vEn')).value;
-  const v=voices.find(x=>x.voiceURI===uri);
-  if(v){ u.voice=v; u.lang=v.lang; } else u.lang=isAr?'ar-SA':'en-US';
+  let v=voices.find(x=>x.voiceURI===(isAr?$('vAr'):$('vEn')).value);
+  if(!v&&isAr) v=voices.find(x=>/^ar/i.test(x.lang))||voices.find(x=>/arab|عرب/i.test(x.name));
+  u.lang=(v?v.lang:(isAr?'ar-SA':'en-US')).replace('_','-');
+  if(v) u.voice=v;
   u.rate=parseFloat($('rate').value);
+  diag('device | '+(isAr?'AR':'non-AR')+' | '+(v?v.name+' '+v.lang:'no voice, lang='+u.lang)+(why?' | '+why:''));
   let fired=false; const fin=()=>{ if(fired) return; fired=true; clearInterval(keep); done(); };
-  u.onend=fin; u.onerror=fin;
+  u.onend=fin; u.onerror=e=>{ diag('device error: '+(e&&e.error)); fin(); };
   curUtter=u;
   synth.speak(u);
   const keep=setInterval(()=>{ if(!synth.speaking){ fin(); } },700);
 }
 function hasArVoice(){ return voices.some(v=>/^ar/i.test(v.lang)); }
 function speak(text,done){
-  const isAr=/[\u0600-\u06FF]/.test(text);
+  text=text.normalize('NFKC');
+  const isAr=AR_RE.test(text);
   const mode=$('vmode').value;
-  const useNet=text.length<=190&&((mode==='net')||(mode==='auto'&&isAr&&!hasArVoice()));
+  const useNet=text.length<=190&&(mode==='net'||(mode==='auto'&&isAr));
   if(!useNet){ speakDevice(text,done); return; }
   let fired=false;
-  const fallback=()=>{ if(fired) return; fired=true; speakDevice(text,done); };
+  const fallback=why=>{ if(fired) return; fired=true; speakDevice(text,done,why); };
   const url='https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl='+(isAr?'ar':'en')+'&q='+encodeURIComponent(text);
   const a=new Audio(url); curAudio=a;
   a.playbackRate=Math.min(1.25,Math.max(0.6,parseFloat($('rate').value)));
+  diag('google-net | '+(isAr?'AR':'non-AR'));
   a.onended=()=>{ if(fired) return; fired=true; done(); };
-  a.onerror=fallback;
-  const pr=a.play(); if(pr&&pr.catch) pr.catch(fallback);
+  a.onerror=()=>fallback('net failed');
+  const pr=a.play(); if(pr&&pr.catch) pr.catch(()=>fallback('net blocked'));
 }
 function stopAudio(){
   if(curAudio){ curAudio.onended=null; curAudio.onerror=null; try{ curAudio.pause(); }catch(e){} curAudio=null; }
